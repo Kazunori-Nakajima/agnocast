@@ -627,6 +627,12 @@ void BridgeManager::create_pubsub_bridge_if_needed(
       result = loader_->create_r2a_pubsub_bridge(container_node_, topic_name, message_type, qos);
     } else {
       auto qos = get_publisher_qos(topic_name, qos_source_id);
+      if (topic_name == "/diagnostics") {
+        RCLCPP_INFO(
+          logger_,
+          "A2R diagnostics bridge: qos_source_id=%d, subscription_depth=%zu",
+          static_cast<int>(qos_source_id), qos.depth());
+      }
       result = loader_->create_a2r_pubsub_bridge(container_node_, topic_name, message_type, qos);
     }
 

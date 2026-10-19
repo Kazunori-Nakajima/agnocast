@@ -384,14 +384,19 @@ void BridgeManager::activate_daemon_forced_bridge(
   bool is_r2a)
 {
   try {
+    auto bridge_qos = qos;
+    if (!is_r2a && topic_name == "/diagnostics") {
+      bridge_qos.keep_last(std::max<size_t>(qos.depth(), 1000));
+    }
     if (topic_name == "/diagnostics") {
       record_bridge_debug(
         std::string("event=create_attempt path=daemon_forced topic=/diagnostics direction=") +
-        (is_r2a ? "R2A" : "A2R") + " qos_source_id=none depth=" + std::to_string(qos.depth()));
+        (is_r2a ? "R2A" : "A2R") + " qos_source_id=none source_depth=" +
+        std::to_string(qos.depth()) + " depth=" + std::to_string(bridge_qos.depth()));
     }
     PubsubBridgeResult result =
       is_r2a ? loader_->create_r2a_pubsub_bridge(container_node_, topic_name, message_type, qos)
-             : loader_->create_a2r_pubsub_bridge(container_node_, topic_name, message_type, qos);
+             : loader_->create_a2r_pubsub_bridge(container_node_, topic_name, message_type, bridge_qos);
     if (topic_name == "/diagnostics") {
       record_bridge_debug(std::string("event=create_result path=daemon_forced success=") +
         (result.entity_handle ? "true" : "false"));
@@ -674,10 +679,15 @@ void BridgeManager::create_pubsub_bridge_if_needed(
       result = loader_->create_r2a_pubsub_bridge(container_node_, topic_name, message_type, qos);
     } else {
       auto qos = get_publisher_qos(topic_name, qos_source_id);
+      const auto source_depth = qos.depth();
       if (topic_name == "/diagnostics") {
+        // Diagnostics from many publishers share this subscription's history window.
+        // Retain bursts instead of inheriting a single publisher's depth of one.
+        qos.keep_last(std::max<size_t>(source_depth, 1000));
         record_bridge_debug(
           "event=create_attempt path=normal topic=/diagnostics direction=A2R qos_source_id=" +
-          std::to_string(qos_source_id) + " depth=" + std::to_string(qos.depth()));
+          std::to_string(qos_source_id) + " source_depth=" + std::to_string(source_depth) +
+          " depth=" + std::to_string(qos.depth()));
       }
       if (topic_name == "/diagnostics") {
         RCLCPP_INFO(

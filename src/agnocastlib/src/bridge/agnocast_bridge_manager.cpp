@@ -16,11 +16,42 @@
 #include <cstddef>
 #include <cstring>
 #include <deque>
+#include <cstdio>
+#include <filesystem>
 #include <mutex>
 #include <string>
 
 namespace agnocast
 {
+
+namespace
+{
+// Temporary CI instrumentation: independent of daemon stdout/stderr redirection.
+void record_bridge_debug(const std::string & event)
+{
+  try {
+    static const auto start_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+    const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+    const std::string directory = "/tmp/agnocast_bridge_debug";
+    std::filesystem::create_directories(directory);
+    const auto path = directory + "/bridge-" + std::to_string(getpid()) + "-" +
+      std::to_string(start_ns) + ".log";
+    auto * file = std::fopen(path.c_str(), "a");
+    if (!file) {
+      std::perror("agnocast bridge debug fopen");
+      return;
+    }
+    std::fprintf(file, "unix_ns=%lld pid=%d %s\n", static_cast<long long>(now_ns),
+      static_cast<int>(getpid()), event.c_str());
+    std::fclose(file);
+  } catch (const std::exception & error) {
+    std::fprintf(stderr, "agnocast bridge debug: %s\n", error.what());
+  }
+}
+}  // namespace
+
 
 BridgeManager::BridgeManager()
 : logger_(rclcpp::get_logger("agnocast_bridge_manager")),
@@ -36,6 +67,8 @@ BridgeManager::BridgeManager()
   rclcpp::InitOptions init_options{};
   init_options.shutdown_on_signal = false;
   rclcpp::init(0, nullptr, init_options);
+  record_bridge_debug("instrumentation=v1 event=manager_started ipc_ns=" +
+    std::to_string(self_ipc_ns_inode_));
 }
 
 BridgeManager::~BridgeManager()
@@ -351,9 +384,18 @@ void BridgeManager::activate_daemon_forced_bridge(
   bool is_r2a)
 {
   try {
+    if (topic_name == "/diagnostics") {
+      record_bridge_debug(
+        std::string("event=create_attempt path=daemon_forced topic=/diagnostics direction=") +
+        (is_r2a ? "R2A" : "A2R") + " qos_source_id=none depth=" + std::to_string(qos.depth()));
+    }
     PubsubBridgeResult result =
       is_r2a ? loader_->create_r2a_pubsub_bridge(container_node_, topic_name, message_type, qos)
              : loader_->create_a2r_pubsub_bridge(container_node_, topic_name, message_type, qos);
+    if (topic_name == "/diagnostics") {
+      record_bridge_debug(std::string("event=create_result path=daemon_forced success=") +
+        (result.entity_handle ? "true" : "false"));
+    }
     if (!result.entity_handle) {
       return;
     }
@@ -624,9 +666,19 @@ void BridgeManager::create_pubsub_bridge_if_needed(
     PubsubBridgeResult result;
     if (is_r2a) {
       auto qos = get_subscriber_qos(topic_name, qos_source_id);
+      if (topic_name == "/diagnostics") {
+        record_bridge_debug(
+          "event=create_attempt path=normal topic=/diagnostics direction=R2A qos_source_id=" +
+          std::to_string(qos_source_id) + " depth=" + std::to_string(qos.depth()));
+      }
       result = loader_->create_r2a_pubsub_bridge(container_node_, topic_name, message_type, qos);
     } else {
       auto qos = get_publisher_qos(topic_name, qos_source_id);
+      if (topic_name == "/diagnostics") {
+        record_bridge_debug(
+          "event=create_attempt path=normal topic=/diagnostics direction=A2R qos_source_id=" +
+          std::to_string(qos_source_id) + " depth=" + std::to_string(qos.depth()));
+      }
       if (topic_name == "/diagnostics") {
         RCLCPP_INFO(
           logger_,
@@ -636,6 +688,10 @@ void BridgeManager::create_pubsub_bridge_if_needed(
       result = loader_->create_a2r_pubsub_bridge(container_node_, topic_name, message_type, qos);
     }
 
+    if (topic_name == "/diagnostics") {
+      record_bridge_debug(std::string("event=create_result path=normal success=") +
+        (result.entity_handle ? "true" : "false"));
+    }
     if (result.entity_handle) {
       if (is_r2a) {
         if (!update_ros2_publisher_num(container_node_.get(), topic_name)) {
